@@ -1,0 +1,12 @@
+# glob y minimatch llegan por herramientas de desarrollo (@nestjs/cli y testcontainers). No entran en
+# dist/ ni corren en el servidor. El arreglo pide un salto mayor dentro de esas herramientas, así que se
+# revisa cuando las suba el CLI de Nest.
+[[IgnoredVulns]]
+id = "GHSA-3g3m-2fjr-6pw4"
+ignoreUntil = 2026-12-15
+reason = "glob solo dentro de las herramientas de desarrollo, no está en dist/"
+
+[[IgnoredVulns]]
+id = "GHSA-g3hv-75wg-m249"
+ignoreUntil = 2026-12-15
+reason = "minimatch solo dentro de las herramientas de desarrollo, no está en dist/"
