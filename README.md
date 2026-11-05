@@ -1,12 +1,14 @@
+Español: [README.es.md](README.es.md)
+
 # webhook-inbox
 
-Un receptor de webhooks de Stripe que guarda cada evento antes de procesarlo, aguanta entregas repetidas y desordenadas, reintenta lo que falla con espera creciente y deja los eventos que no se pueden procesar en una lista que se puede revisar y reenviar a la cola.
+A Stripe webhook receiver that stores every event before processing it, tolerates repeated and out-of-order deliveries, retries failures with growing delays, and puts events that can't be processed into a list you can review and send back to the queue.
 
-Lo hice porque un endpoint de webhooks que "funciona" en un tutorial falla de formas silenciosas en producción: Stripe reintenta (el mismo evento llega dos veces), no garantiza el orden (un reembolso puede llegar antes del pago) y si tu endpoint tarda, vuelve a mandar. Quería comprobar con pruebas cada una de esas formas de fallar.
+I built it because a webhook endpoint that "works" in a tutorial fails in silent ways in production: Stripe retries (the same event arrives twice), doesn't guarantee order (a refund can arrive before the payment), and if your endpoint is slow, it sends the event again. I wanted to check each of those failure modes with tests.
 
 **Stack:** NestJS 12 · TypeScript · PostgreSQL · Vitest · Testcontainers
 
-## Cómo funciona
+## How it works
 
 ```
 Stripe ──POST──> /webhooks/stripe ──firma ok──> INSERT (id = clave) ──> 200
@@ -17,18 +19,18 @@ Stripe ──POST──> /webhooks/stripe ──firma ok──> INSERT (id = cla
                                                           falla: reintento con backoff ──> tras 6 intentos: dead
 ```
 
-1. **Recibir.** Verifica la firma sobre los bytes exactos del cuerpo (el SDK de Stripe, con tolerancia de 5 minutos contra repeticiones), guarda el evento con su id como clave primaria y responde 200. No procesa nada en la petición.
-2. **Idempotencia.** `INSERT ... ON CONFLICT DO NOTHING` sobre el id del evento. Veinte entregas simultáneas del mismo evento dejan una fila y una sola respuesta `duplicate: false`.
-3. **Procesar.** Un worker toma los eventos listos con `UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)`. El cambio en el pedido y la marca `done` van en la misma transacción.
-4. **Orden.** Cada pedido recuerda la fecha del último evento que aplicó. Uno más viejo se descarta. Si coinciden en el mismo segundo, gana el estado más avanzado (`refunded` > `paid` > `failed`).
-5. **Fallos.** Reintento con espera `5 s × 2^(intento-1)`, tope de 1 hora y jitter completo. A los 6 intentos pasa a `dead`.
-6. **Muertos.** `GET /admin/events` los lista y `POST /admin/events/:id/retry` los devuelve a la cola. Piden `Authorization: Bearer <ADMIN_TOKEN>`; sin `ADMIN_TOKEN` configurado el panel no existe (404).
+1. **Receive.** It verifies the signature over the exact bytes of the body (the Stripe SDK, with a 5-minute tolerance against replays), stores the event with its id as primary key and answers 200. It processes nothing during the request.
+2. **Idempotency.** `INSERT ... ON CONFLICT DO NOTHING` on the event id. Twenty simultaneous deliveries of the same event leave one row and a single `duplicate: false` response.
+3. **Process.** A worker picks up ready events with `UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)`. The change to the order and the `done` mark go in the same transaction.
+4. **Ordering.** Each order remembers the date of the last event it applied. An older one is discarded. If two share the same second, the more advanced state wins (`refunded` > `paid` > `failed`).
+5. **Failures.** Retry with a delay of `5 s × 2^(attempt-1)`, capped at 1 hour, with full jitter. After 6 attempts it moves to `dead`.
+6. **Dead events.** `GET /admin/events` lists them and `POST /admin/events/:id/retry` puts them back in the queue. Both require `Authorization: Bearer <ADMIN_TOKEN>`; if `ADMIN_TOKEN` isn't configured, the panel doesn't exist (404).
 
-Maneja `payment_intent.succeeded`, `payment_intent.payment_failed` y `charge.refunded`. Cualquier otro tipo se guarda y se marca `ignored`.
+It handles `payment_intent.succeeded`, `payment_intent.payment_failed` and `charge.refunded`. Any other type is stored and marked `ignored`.
 
-## Cómo correrlo
+## How to run it
 
-Necesitas Node 24 y Docker.
+You need Node 24 and Docker.
 
 ```bash
 docker compose up -d db
@@ -37,39 +39,39 @@ npm install
 DATABASE_URL=postgres://postgres:postgres@localhost:5433/postgres STRIPE_WEBHOOK_SECRET=whsec_dev npm run start
 ```
 
-En otra terminal, para ver el flujo sin cuenta de Stripe (manda un reembolso antes que su pago, una entrega repetida y una firma falsa):
+In another terminal, to see the flow without a Stripe account (it sends a refund before its payment, a repeated delivery and a forged signature):
 
 ```bash
 STRIPE_WEBHOOK_SECRET=whsec_dev npm run simulate
 ```
 
-Los tests levantan su propio Postgres con Testcontainers, así que solo piden Docker:
+The tests start their own Postgres with Testcontainers, so they only need Docker:
 
 ```bash
 npm test
 ```
 
-## Qué prueban los tests
+## What the tests check
 
-31 pruebas contra un Postgres real, no contra un mock, porque lo que importa aquí (`ON CONFLICT`, `SKIP LOCKED`, transacciones) es comportamiento de la base:
+31 tests against a real Postgres, not a mock, because what matters here (`ON CONFLICT`, `SKIP LOCKED`, transactions) is database behavior:
 
-- **Firma:** sin cabecera, secreto equivocado, cuerpo alterado, JSON reserializado con la firma original, firma vieja; y que el rechazo no filtre el motivo.
-- **Idempotencia:** entrega repetida y 20 entregas simultáneas.
-- **Orden:** reembolso antes que el pago, mismo segundo en ambos órdenes, fallo viejo después de un pago.
-- **Reintentos:** backoff exacto, no se vuelve a tomar antes de tiempo, paso a `dead`, un evento roto no frena a los demás.
-- **Concurrencia:** tres workers sobre 40 eventos procesan cada uno una vez; una fila bloqueada por otra transacción no frena al worker; un evento abandonado con el candado vencido lo reclama otro worker.
-- **Panel:** token, estado inventado con SQL dentro, reenvío y 404.
+- **Signature:** no header, wrong secret, altered body, re-serialized JSON with the original signature, old signature; and that the rejection doesn't leak the reason.
+- **Idempotency:** repeated delivery and 20 simultaneous deliveries.
+- **Ordering:** refund before the payment, same second in both orders, old failure after a payment.
+- **Retries:** exact backoff, not picked up again too early, move to `dead`, one broken event doesn't hold back the others.
+- **Concurrency:** three workers over 40 events process each one once; a row locked by another transaction doesn't block the worker; an event abandoned with an expired lock is claimed by another worker.
+- **Panel:** token, invented state with SQL inside, resend and 404.
 
-Para comprobar que las pruebas pueden fallar, quité a propósito `ON CONFLICT`, la guarda de orden y `SKIP LOCKED`, y cada cambio rompió las pruebas que debía. Con `SKIP LOCKED` fue distinto: la prueba de tres workers seguía pasando sin él. Resultó que la unicidad la garantiza el `UPDATE` (Postgres reevalúa el `WHERE` tras esperar el bloqueo) y `SKIP LOCKED` solo evita esperar. Corregí el comentario del código y agregué la prueba de la fila bloqueada, que sí falla sin él.
+To check that the tests can fail, I deliberately removed `ON CONFLICT`, the ordering guard and `SKIP LOCKED`, and each change broke the tests it should have. `SKIP LOCKED` was different: the three-worker test kept passing without it. It turned out that uniqueness is guaranteed by the `UPDATE` (Postgres re-evaluates the `WHERE` after waiting for the lock) and `SKIP LOCKED` only avoids the wait. I fixed the comment in the code and added the locked-row test, which does fail without it.
 
-## Lo que no es
+## What it is not
 
-- **No está conectado a una cuenta de Stripe.** Las firmas de las pruebas y del simulador las calcula el helper del SDK con un secreto de prueba. Nunca procesó un pago real. Probarlo con `stripe trigger` pide la CLI de Stripe y una cuenta en modo de prueba.
-- **No es un sistema de pedidos.** La tabla `orders` es un pretexto para tener un estado que cambia; no hay catálogo, clientes ni cobros.
-- **Solo tres tipos de evento.** Un reembolso parcial se reconoce y se ignora.
-- **No medí rendimiento.** Usar Postgres como cola es razonable para este volumen y simple de operar, pero no sé cuántos eventos por segundo aguanta. Con mucho más tráfico habría que medir antes de afirmar nada.
-- **Entrega al menos una vez.** Los handlers son idempotentes por diseño; si un handler tuviera efectos fuera de la base (un correo, otra API), habría que protegerlos aparte.
-- **Sin métricas ni trazas.** Solo logs de Nest.
-- **El panel es un token fijo en una variable de entorno.** Sirve para operar; no es un sistema de usuarios.
+- **It isn't connected to a Stripe account.** The signatures in the tests and the simulator are computed by the SDK helper with a test secret. It never processed a real payment. Trying it with `stripe trigger` requires the Stripe CLI and an account in test mode.
+- **It isn't an order system.** The `orders` table is a pretext to have some state that changes; there is no catalog, no customers and no charges.
+- **Only three event types.** A partial refund is recognized and ignored.
+- **I didn't measure performance.** Using Postgres as a queue is reasonable for this volume and simple to operate, but I don't know how many events per second it handles. With much more traffic I would have to measure before claiming anything.
+- **At-least-once delivery.** The handlers are idempotent by design; if a handler had effects outside the database (an email, another API), they would need to be protected separately.
+- **No metrics or traces.** Only Nest logs.
+- **The panel is a fixed token in an environment variable.** It works for operating the service; it isn't a user system.
 
-Las decisiones y lo que descarté están en [docs/decisions.md](docs/decisions.md).
+The decisions and what I ruled out are in [docs/decisions.md](docs/decisions.md).
